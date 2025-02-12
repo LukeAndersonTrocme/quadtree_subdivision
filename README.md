@@ -5,4 +5,9 @@ This project recursively divides an image into sections based on color variation
 
 By default, the program starts with the entire image as the initial section to divide. The threshold for subdivision is dynamically controlled by the x-coordinate of the user's cursor within the window.
 
+Change the image in the filepath to use a custom image. Add that image to the data folder. 
+```processing
+
+img = loadImage("yourImage.jpg");
+
 ![Example image](save.jpg)
