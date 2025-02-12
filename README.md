@@ -7,7 +7,6 @@ By default, the program starts with the entire image as the initial section to d
 
 Change the image in the filepath to use a custom image. Add that image to the data folder. 
 ```processing
-
 img = loadImage("yourImage.jpg");
-
+```
 ![Example image](save.jpg)
