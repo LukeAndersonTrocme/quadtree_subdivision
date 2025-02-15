@@ -1,6 +1,8 @@
+
 // quadtree_subdivision.pde
 import controlP5.*;
 import java.io.File; // Needed for file selection
+ArrayList<Integer> uniqueColors = new ArrayList<>();
 
 PImage img;
 ArrayList<sq> sqs;
@@ -16,56 +18,116 @@ Button loadImageButton;
 float currentThreshold = 10;
 
 void setup() {
-  size(1000, 1000, P3D);
+  size(1200, 1000, P3D);  // Increased width to accommodate a sidebar
 
-  // Load a default image (if desired)
+  // Load default image
   img = loadImage("1.jpg");
-  img.resize(width, height);
+  img.resize(900, height);  // Ensure the image doesn't take full width
 
-  // Initialize array for storing subdivided squares
+  // Initialize array for storing subdivided regions
   sqs = new ArrayList<sq>();
 
-  // Initialize ControlP5
+  // Initialize ControlP5 for GUI
   cp5 = new ControlP5(this);
 
-  // Create a slider for controlling the threshold
+  int sidebarWidth = 250;  // Sidebar width
+
+  // Subdivision Threshold Slider
   thresholdSlider = cp5.addSlider("SubdivisionThreshold")
-    .setPosition(20, 20)
-    .setWidth(200)
-    .setRange(5, 50)  // Minimum & maximum threshold
+    .setPosition(20, 40)
+    .setWidth(sidebarWidth - 40)
+    .setRange(5, 50)
     .setValue(currentThreshold)
     .setLabel("Color Variation Threshold");
 
-  // Create a button to load a new image
+  // Load Image Button
   loadImageButton = cp5.addButton("LoadImage")
-    .setPosition(20, 60)
-    .setSize(100, 30)
+    .setPosition(20, 80)
+    .setSize(sidebarWidth - 40, 30)
     .setLabel("Load Image");
+
+  // Toggle Button for Color vs. Pattern Mode
+  cp5.addToggle("PatternMode")
+    .setPosition(20, 130)
+    .setSize(50, 20)
+    .setLabel("Pattern Mode");
+
+  // Pattern Selection Dropdown
+  cp5.addScrollableList("PatternType")
+    .setPosition(20, 170)
+    .setSize(sidebarWidth - 40, 100)
+    .addItem("Horizontal", 0)
+    .addItem("Vertical", 1)
+    .addItem("Diagonal", 2)
+    .addItem("Crosshatch", 3)
+    .addItem("Hexagon", 4)
+    .addItem("Circles", 5)
+    .setLabel("Select Pattern");
+
+  // Line Thickness & Spacing Sliders
+  cp5.addSlider("LineThickness")
+    .setPosition(20, 280)
+    .setWidth(sidebarWidth - 40)
+    .setRange(1, 10)
+    .setValue(2)
+    .setLabel("Line Thickness");
+
+  cp5.addSlider("LineSpacing")
+    .setPosition(20, 320)
+    .setWidth(sidebarWidth - 40)
+    .setRange(5, 50)
+    .setValue(20)
+    .setLabel("Line Spacing");
 }
+
+
 
 void draw() {
-  background(255);
+  background(240);  // Set background for entire canvas
 
-  // Retrieve the threshold from the slider
-  currentThreshold = thresholdSlider.getValue();
-
-  // Clear the ArrayList each frame and re-generate squares
-  sqs.clear();
-
-  // Perform the adaptive subdivision with our current threshold
-  adaptiveSubdivision(0, 0, width, height, currentThreshold);
-
-  // Draw each subdivided region
+  // --- Draw Sidebar First ---
+  fill(220);
   noStroke();
-  for (int i = 0; i < sqs.size(); i++) {
-    sq s = sqs.get(i);
-    fill(s.c);
-    rect(s.x, s.y, s.w, s.h);
-  }
+  rect(0, 0, 250, height);  // Left-aligned sidebar (always on the left)
 
-  // Display the threshold in the console (optional)
-  // print(currentThreshold + " ");
+  // --- Retrieve GUI values ---
+  currentThreshold = thresholdSlider.getValue();
+  boolean usePatterns = cp5.get(Toggle.class, "PatternMode").getState();
+  int selectedPattern = int(cp5.get(ScrollableList.class, "PatternType").getValue());
+  float lineThickness = cp5.get(Slider.class, "LineThickness").getValue();
+  float lineSpacing = cp5.get(Slider.class, "LineSpacing").getValue();
+
+  // --- Draw Subdivided Image (Restrict to Right Side) ---
+  pushMatrix();
+  translate(250, 0);  // Offset image to the right
+  applySubdivision(usePatterns, selectedPattern, lineThickness, lineSpacing);
+  popMatrix();
 }
+
+
+
+
+
+
+// Button-triggered update
+public void GeneratePattern() {
+  println("GeneratePattern clicked! Updating visualization...");
+
+  boolean usePatterns = cp5.get(Toggle.class, "PatternMode").getState();
+  int selectedPattern = int(cp5.get(ScrollableList.class, "PatternType").getValue());
+  float lineThickness = cp5.get(Slider.class, "LineThickness").getValue();
+  float lineSpacing = cp5.get(Slider.class, "LineSpacing").getValue();
+
+  applySubdivision(usePatterns, selectedPattern, lineThickness, lineSpacing);
+}
+
+
+// Apply the quadtree subdivision with current settings
+void applySubdivision(boolean usePatterns, int patternType, float thickness, float spacing) {
+  sqs.clear();
+  adaptiveSubdivision(0, 0, width, height, currentThreshold, usePatterns, patternType, thickness, spacing);
+}
+
 
 // This function is automatically called by ControlP5 when the "LoadImage" button is clicked
 public void LoadImage() {
@@ -81,12 +143,12 @@ public void fileSelected(File selection) {
     String path = selection.getAbsolutePath();
     println("Loading new image from: " + path);
 
-    // Load and resize
+    // Load and resize image (Restrict to right side)
     img = loadImage(path);
     if (img == null) {
       println("Could not load the image. Make sure the file is a valid image format.");
       return;
     }
-    img.resize(width, height);
+    img.resize(width - 250, height);
   }
 }
