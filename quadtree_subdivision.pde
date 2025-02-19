@@ -1,126 +1,128 @@
 /**
- * Quadtree Subdivision – Production-Ready Prototype with CMYK Support
+ * Quadtree Subdivision – Production-Ready Prototype with CMYK & Export Support
+ * and Cached Processed Snapshot, plus fix for pixelation and line patterns:
  * 
- * This application recursively subdivides an image based on its color variation.
- * It supports both a simple color mode and a pattern mode (for quantization).
- * In addition, a CMYK mode is provided:
- *   - When CMYK mode is enabled, the image is converted to CMYK, and four
- *     monochrome (greyscale) images are generated (for Cyan, Magenta, Yellow, and Black).
- *   - The user can view these four images in a 2x2 grid or overlay them into a single composite.
+ * We now explicitly pass the PGraphics object (processedPG) to the Quadtree,
+ * so that all drawing of pixelation and line patterns occurs on the offscreen
+ * buffer. Then we display the offscreen buffer in draw().
  *
- * Future roadmap ideas:
- *   - Per-layer fill customization for quantized layers.
- *   - More advanced CMYK blending and export features.
- *
- * Improvements over the initial prototype:
- *   - Modular design with encapsulated subdivision logic (Quadtree class)
- *   - Use of constants to avoid magic numbers
- *   - Caching: subdivisions (or CMYK layers) are recalculated only when parameters change
- *   - Optimized image processing using loadPixels() for faster performance
- *   - Basic error handling for image loading
+ * This application supports multiple modes:
+ *   1) Pixelation (quantized subdivisions)
+ *   2) Pattern overlays for subdivisions
+ *   3) CMYK mode that converts the processed output into 4 channels
+ * 
+ * We have a tab-based UI (MainTab, PixelationTab, PatternsTab, CMYKTab).
+ * - If currentThreshold == 0 => no background image is drawn.
+ * - All text is forced to black.
+ * - We rely on setAutoDraw(false) and manually call cp5.draw() in draw().
  *
  * Author: [Your Name]
  * Date: [Today's Date]
  */
 
 //////////////////////////////
-// Constants and Global Variables
+// Constants and Globals
 //////////////////////////////
 
 final int SIDEBAR_WIDTH = 250;
-final int APP_WIDTH = 1200;
-final int APP_HEIGHT = 1000;
-final int IMAGE_WIDTH = APP_WIDTH - SIDEBAR_WIDTH;
-final int IMAGE_HEIGHT = APP_HEIGHT;
+final int APP_WIDTH     = 1200;
+final int APP_HEIGHT    = 1000;
+final int IMAGE_WIDTH   = APP_WIDTH - SIDEBAR_WIDTH;
+final int IMAGE_HEIGHT  = APP_HEIGHT;
 
-// Global image and processing objects
-PImage img;
-Quadtree quadtree;
-boolean needsUpdate = true;
+PImage   img;            // The base loaded image
+Quadtree quadtree;       // Handles pixelation & pattern logic
+boolean  needsUpdate = true;
 
-// Mode toggles for quantization display options:
-boolean showPixelation = true;
-boolean showLinePatterns = false;
-boolean showBackgroundImage = true;
+// Toggles
+boolean showPixelation  = true;
+boolean showLinePatterns= false;
+boolean cmykMode        = false;
+boolean overlayCMYK     = false;
 
-// --- New: CMYK Mode globals ---
-boolean cmykMode = false;        // When true, CMYK conversion is performed
-boolean overlayCMYK = false;     // When true, composite (overlaid) CMYK is shown instead of 4 panels
+// Offscreen buffer & cached result
+PGraphics processedPG;
+PImage    processedImage;
+
+// CMYK channels
 PImage cImg, mImg, yImg, kImg, compositeCMYK;
 
+String baseFileName = "export";
+
 //////////////////////
-// GUI Declarations
+// GUI (ControlP5)
 //////////////////////
 
 import controlP5.*;
 ControlP5 cp5;
-Slider thresholdSlider;
-Button loadImageButton;
-ScrollableList patternTypeList;
-Slider lineThicknessSlider;
-Slider lineSpacingSlider;
 
-// Parameter defaults
-float currentThreshold = 10;
-int currentPatternType = 0;
-float currentLineThickness = 2;
-float currentLineSpacing = 20;
+// We use tabs
+Tab tabMain, tabPixelation, tabPatterns, tabCMYK;
+
+Slider        thresholdSlider;
+ScrollableList patternTypeList;
+Slider        lineThicknessSlider, lineSpacingSlider;
+
+Button exportButton, loadImageButton;
+
+float currentThreshold     = 10;
+int   currentPatternType   = 0;
+float currentLineThickness = 2; 
+float currentLineSpacing   = 2;
 
 /////////////////////////////
 // Data Structures & Classes
 /////////////////////////////
 
 /**
- * Represents a subdivided region (square) of the image.
- * In color mode, the region stores a fill color.
- * In pattern mode, the region stores parameters for drawing a pattern.
+ * SubdivisionSquare: a region in the quadtree
+ * We pass a PGraphics context to drawSquare(pg) so that all drawing
+ * goes to the offscreen buffer instead of the main canvas.
  */
 class SubdivisionSquare {
   float x, y, w, h;
   color col;
   boolean usePattern;
   int patternType;
-  float thickness;
-  float spacing;
+  float thickness, spacing;
   
-  // Constructor for solid color mode
-  SubdivisionSquare(float x, float y, float w, float h, color col) {
-    this.x = x;
-    this.y = y;
-    this.w = w;
-    this.h = h;
-    this.col = col;
+  // Solid color mode
+  SubdivisionSquare(float x, float y, float w, float h, color c) {
+    this.x=x; 
+    this.y=y; 
+    this.w=w; 
+    this.h=h;
+    this.col = c;
     this.usePattern = false;
   }
   
-  // Constructor for pattern mode
-  SubdivisionSquare(float x, float y, float w, float h, int patternType, float thickness, float spacing) {
-    this.x = x;
-    this.y = y;
-    this.w = w;
-    this.h = h;
+  // Pattern mode
+  SubdivisionSquare(float x, float y, float w, float h, int pType, float thick, float sp) {
+    this.x=x; 
+    this.y=y; 
+    this.w=w; 
+    this.h=h;
     this.usePattern = true;
-    this.patternType = patternType;
-    this.thickness = thickness;
-    this.spacing = spacing;
-    // Default background (white) for pattern mode
+    this.patternType = pType;
+    this.thickness = thick;
+    this.spacing = sp;
     this.col = color(255);
   }
   
-  void drawSquare() {
+  void drawSquare(PGraphics pg) {
     if (usePattern) {
-      drawPattern(x, y, w, h, patternType, thickness, spacing);
+      drawPattern(pg, x, y, w, h, patternType, thickness, spacing);
     } else {
-      noStroke();
-      fill(col);
-      rect(x, y, w, h);
+      pg.noStroke();
+      pg.fill(col);
+      pg.rect(x, y, w, h);
     }
   }
 }
 
 /**
- * Encapsulates the quadtree subdivision logic.
- * Future enhancements might separate quantization from fill style.
+ * Quadtree: subdivides based on color variation
+ * We'll add a drawQuads(pg) method that takes a PGraphics context.
  */
 class Quadtree {
   ArrayList<SubdivisionSquare> squares;
@@ -133,264 +135,278 @@ class Quadtree {
     squares.clear();
   }
   
-  /**
-   * Recursively subdivides the given region based on color variation.
-   * The parameter "usePatterns" determines if pattern mode is applied.
-   */
   void subdivide(float x, float y, float w, float h, float threshold, 
-                   boolean usePatterns, int patternType, float thickness, float spacing) {
+                 boolean usePatterns, int pType, float thick, float sp) {
     color avgColor = getAverageColorRegion(x, y, w, h);
     float variation = getColorVariationRegion(x, y, w, h, avgColor);
     
     if (variation > threshold && w > 6 && h > 6) {
-      float halfW = w / 2;
-      float halfH = h / 2;
-      subdivide(x, y, halfW, halfH, threshold, usePatterns, patternType, thickness, spacing);
-      subdivide(x + halfW, y, halfW, halfH, threshold, usePatterns, patternType, thickness, spacing);
-      subdivide(x, y + halfH, halfW, halfH, threshold, usePatterns, patternType, thickness, spacing);
-      subdivide(x + halfW, y + halfH, halfW, halfH, threshold, usePatterns, patternType, thickness, spacing);
+      float halfW = w/2, halfH = h/2;
+      subdivide(x,        y,        halfW, halfH, threshold, usePatterns, pType, thick, sp);
+      subdivide(x+halfW,  y,        halfW, halfH, threshold, usePatterns, pType, thick, sp);
+      subdivide(x,        y+halfH,  halfW, halfH, threshold, usePatterns, pType, thick, sp);
+      subdivide(x+halfW,  y+halfH,  halfW, halfH, threshold, usePatterns, pType, thick, sp);
     } else {
       if (usePatterns) {
-        squares.add(new SubdivisionSquare(x, y, w, h, patternType, thickness, spacing));
+        squares.add(new SubdivisionSquare(x, y, w, h, pType, thick, sp));
       } else {
         squares.add(new SubdivisionSquare(x, y, w, h, avgColor));
       }
     }
   }
   
-  void drawQuads() {
-    for (SubdivisionSquare s : squares) {
-      s.drawSquare();
+  // We'll pass the PGraphics context to draw
+  void drawQuads(PGraphics pg) {
+    for (SubdivisionSquare sq : squares) {
+      sq.drawSquare(pg);
     }
   }
 }
 
 //////////////////////////
-// Settings, Setup, and Draw Methods
+// Settings, Setup, Draw
 //////////////////////////
 
-// Use settings() for the size() call when using P3D
-void settings() {
+void settings(){
   size(APP_WIDTH, APP_HEIGHT, P3D);
 }
 
-void setup() {
-  // Load default image and resize to the image area
+void setup(){
   img = loadImage("mona_lisa.jpeg");
-  if (img == null) {
-    println("Default image not found. Exiting.");
+  if(img==null){
+    println("No default image found. Exiting.");
     exit();
   }
-  img.resize(IMAGE_WIDTH, IMAGE_HEIGHT);
-  img.loadPixels();  // Preload pixel data
+  baseFileName="mona_lisa";
+  img.resize(IMAGE_WIDTH,IMAGE_HEIGHT);
+  img.loadPixels();
   
-  quadtree = new Quadtree();
-  cp5 = new ControlP5(this);
+  processedPG = createGraphics(IMAGE_WIDTH, IMAGE_HEIGHT, P2D);
+  quadtree=new Quadtree();
   
-  int sidebarWidth = SIDEBAR_WIDTH;
-  
-  // --- Create GUI Controls in the sidebar ---
-  
-  // New toggles for multi-mode options:
+  cp5=new ControlP5(this);
+  cp5.setAutoDraw(false); // We'll draw cp5 manually in draw()
+
+  // Create tabs
+  tabMain       = cp5.addTab("MainTab")       .setLabel("Main").activateEvent(true);
+  tabPixelation = cp5.addTab("PixelationTab") .setLabel("Pixelation");
+  tabPatterns   = cp5.addTab("PatternsTab")   .setLabel("Patterns");
+  tabCMYK       = cp5.addTab("CMYKTab")       .setLabel("CMYK");
+
+  // Pixelation Tab
   cp5.addToggle("ShowPixelation")
-     .setPosition(20, 20)
-     .setSize(50, 20)
-     .setLabel("Pixelation")
-     .setValue(showPixelation);
+    .setPosition(20,20)
+    .setSize(70,20)
+    .setLabel("Pixelation")
+    .setValue(showPixelation)
+    .moveTo(tabPixelation.getName());
   
+  thresholdSlider=cp5.addSlider("SubdivisionThreshold")
+    .setPosition(20,60)
+    .setWidth(150)
+    .setRange(0,50)  // 0 => no background
+    .setValue(currentThreshold)
+    .setLabel("Threshold")
+    .moveTo(tabPixelation.getName());
+
+  // Patterns Tab
   cp5.addToggle("ShowLinePatterns")
-     .setPosition(20, 50)
-     .setSize(50, 20)
-     .setLabel("Line Patterns")
-     .setValue(showLinePatterns);
-  
-  cp5.addToggle("ShowBackground")
-     .setPosition(20, 80)
-     .setSize(50, 20)
-     .setLabel("Background")
-     .setValue(showBackgroundImage);
-  
-  // New toggle for CMYK mode:
+    .setPosition(20,20)
+    .setSize(90,20)
+    .setLabel("Line Patterns")
+    .setValue(showLinePatterns)
+    .moveTo(tabPatterns.getName());
+
+  patternTypeList=cp5.addScrollableList("PatternType")
+    .setPosition(20,60)
+    .setSize(150,100)
+    .addItem("Horizontal",0)
+    .addItem("Vertical",1)
+    .addItem("Diagonal",2)
+    .addItem("Crosshatch",3)
+    .addItem("Hexagon",4)
+    .addItem("Circles",5)
+    .setLabel("Pattern Type")
+    .setValue(0)
+    .moveTo(tabPatterns.getName());
+
+  lineThicknessSlider=cp5.addSlider("LineThickness")
+    .setPosition(20,180)
+    .setWidth(150)
+    .setRange(1,10)
+    .setValue(currentLineThickness)
+    .setLabel("Line Thick")
+    .moveTo(tabPatterns.getName());
+
+  lineSpacingSlider=cp5.addSlider("LineSpacing")
+    .setPosition(20,220)
+    .setWidth(150)
+    .setRange(5,50)
+    .setValue(currentLineSpacing)
+    .setLabel("Line Spacing")
+    .moveTo(tabPatterns.getName());
+
+  // CMYK Tab
   cp5.addToggle("CMYKMode")
-     .setPosition(20, 110)
-     .setSize(50, 20)
-     .setLabel("CMYK")
-     .setValue(cmykMode);
-  
-  // New toggle for overlaying CMYK layers:
+    .setPosition(20,20)
+    .setSize(70,20)
+    .setLabel("CMYK")
+    .setValue(cmykMode)
+    .moveTo(tabCMYK.getName());
+
   cp5.addToggle("OverlayCMYK")
-     .setPosition(20, 140)
-     .setSize(50, 20)
-     .setLabel("Overlay")
-     .setValue(overlayCMYK);
-  
-  // Threshold slider for quantization (applies in pixelation mode)
-  thresholdSlider = cp5.addSlider("SubdivisionThreshold")
-     .setPosition(20, 180)
-     .setWidth(SIDEBAR_WIDTH - 40)
-     .setRange(5, 50)
-     .setValue(currentThreshold)
-     .setLabel("Threshold");
-  
-  // Pattern type list (applies in line pattern mode)
-  patternTypeList = cp5.addScrollableList("PatternType")
-     .setPosition(20, 220)
-     .setSize(SIDEBAR_WIDTH - 40, 100)
-     .addItem("Horizontal", 0)
-     .addItem("Vertical", 1)
-     .addItem("Diagonal", 2)
-     .addItem("Crosshatch", 3)
-     .addItem("Hexagon", 4)
-     .addItem("Circles", 5)
-     .setLabel("Pattern Type")
-     .setValue(0);
-  
-  // Sliders for line pattern parameters
-  lineThicknessSlider = cp5.addSlider("LineThickness")
-     .setPosition(20, 330)
-     .setWidth(SIDEBAR_WIDTH - 40)
-     .setRange(1, 10)
-     .setValue(currentLineThickness)
-     .setLabel("Line Thickness");
-  
-  lineSpacingSlider = cp5.addSlider("LineSpacing")
-     .setPosition(20, 370)
-     .setWidth(SIDEBAR_WIDTH - 40)
-     .setRange(5, 50)
-     .setValue(currentLineSpacing)
-     .setLabel("Line Spacing");
-  
-  // Help text in the sidebar with roadmap notes
+    .setPosition(20,60)
+    .setSize(70,20)
+    .setLabel("Overlay")
+    .setValue(overlayCMYK)
+    .moveTo(tabCMYK.getName());
+
+  // Main Tab
+  exportButton=cp5.addButton("ExportImage")
+    .setPosition(20,20)
+    .setSize(130,30)
+    .setLabel("Export")
+    .moveTo(tabMain.getName());
+
+  loadImageButton=cp5.addButton("LoadImage")
+    .setPosition(20,60)
+    .setSize(130,30)
+    .setLabel("Load Image")
+    .moveTo(tabMain.getName());
+
   cp5.addTextlabel("HelpLabel")
-    .setPosition(20, 410)
-    .setText("Help:\n- Adjust threshold.\n- Toggle pixelation, line patterns, background, and CMYK modes.\n- In CMYK mode, view four panels or an overlay composite.\n\nFuture ideas:\n- Per-layer fill customization\n- Export individual layers");
-  
-  // Load image button
-  loadImageButton = cp5.addButton("LoadImage")
-    .setPosition(20, 450)
-    .setSize(SIDEBAR_WIDTH - 40, 30)
-    .setLabel("Load Image");
-  
-  // --- Add listeners to update parameters ---
-  
-  cp5.get(Slider.class, "SubdivisionThreshold").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      currentThreshold = thresholdSlider.getValue();
-      needsUpdate = true;
+    .setPosition(20,110)
+    .setText("Help:\n- 0 threshold => no background.\n- Switch tabs for pixelation, patterns, or CMYK.\n- Export => single or 4 images.\n\nFuture:\n- Resizable sidebar.\n- Tooltips.\n- Per-layer.\n- Advanced blending.")
+    .moveTo(tabMain.getName());
+
+  // Force all text black
+  for (ControllerInterface<?> ci : cp5.getAll()) {
+    if(ci instanceof Controller){
+      ((Controller<?>) ci).setColorValue(color(0));
+    } 
+    else if(ci instanceof ControllerGroup){
+      ((ControllerGroup<?>) ci).setColorValue(color(0));
     }
+  }
+
+  // Hide pattern controls if not toggled
+  if(!showLinePatterns){
+    patternTypeList.hide();
+    lineThicknessSlider.hide();
+    lineSpacingSlider.hide();
+  }
+
+  // Add Listeners
+  cp5.get(Slider.class,"SubdivisionThreshold").addListener(e->{
+    currentThreshold = thresholdSlider.getValue();
+    needsUpdate=true;
   });
-  
-  cp5.get(ScrollableList.class, "PatternType").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      currentPatternType = int(patternTypeList.getValue());
-      needsUpdate = true;
+  cp5.get(ScrollableList.class,"PatternType").addListener(e->{
+    currentPatternType=(int)patternTypeList.getValue();
+    needsUpdate=true;
+  });
+  cp5.get(Slider.class,"LineThickness").addListener(e->{
+    currentLineThickness=lineThicknessSlider.getValue();
+    needsUpdate=true;
+  });
+  cp5.get(Slider.class,"LineSpacing").addListener(e->{
+    currentLineSpacing=lineSpacingSlider.getValue();
+    needsUpdate=true;
+  });
+  cp5.get(Toggle.class,"ShowPixelation").addListener(e->{
+    showPixelation=cp5.get(Toggle.class,"ShowPixelation").getState();
+    needsUpdate=true;
+  });
+  cp5.get(Toggle.class,"ShowLinePatterns").addListener(e->{
+    showLinePatterns=cp5.get(Toggle.class,"ShowLinePatterns").getState();
+    if(showLinePatterns){
+      patternTypeList.show();
+      lineThicknessSlider.show();
+      lineSpacingSlider.show();
+    } else {
+      patternTypeList.hide();
+      lineThicknessSlider.hide();
+      lineSpacingSlider.hide();
     }
+    needsUpdate=true;
   });
-  
-  cp5.get(Slider.class, "LineThickness").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      currentLineThickness = lineThicknessSlider.getValue();
-      needsUpdate = true;
-    }
+  cp5.get(Toggle.class,"CMYKMode").addListener(e->{
+    cmykMode=cp5.get(Toggle.class,"CMYKMode").getState();
+    needsUpdate=true;
   });
-  
-  cp5.get(Slider.class, "LineSpacing").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      currentLineSpacing = lineSpacingSlider.getValue();
-      needsUpdate = true;
-    }
+  cp5.get(Toggle.class,"OverlayCMYK").addListener(e->{
+    overlayCMYK=cp5.get(Toggle.class,"OverlayCMYK").getState();
+    // No reprocessing needed, just changes display
   });
-  
-  cp5.get(Toggle.class, "ShowPixelation").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      showPixelation = cp5.get(Toggle.class, "ShowPixelation").getState();
-      needsUpdate = true;
-    }
+  cp5.get(Button.class,"ExportImage").addListener(e->{
+    exportImage();
   });
-  
-  cp5.get(Toggle.class, "ShowLinePatterns").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      showLinePatterns = cp5.get(Toggle.class, "ShowLinePatterns").getState();
-      needsUpdate = true;
-    }
-  });
-  
-  cp5.get(Toggle.class, "ShowBackground").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      showBackgroundImage = cp5.get(Toggle.class, "ShowBackground").getState();
-      // No recomputation needed for background toggle.
-    }
-  });
-  
-  cp5.get(Toggle.class, "CMYKMode").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      cmykMode = cp5.get(Toggle.class, "CMYKMode").getState();
-      needsUpdate = true;
-    }
-  });
-  
-  cp5.get(Toggle.class, "OverlayCMYK").addListener(new ControlListener() {
-    public void controlEvent(ControlEvent event) {
-      overlayCMYK = cp5.get(Toggle.class, "OverlayCMYK").getState();
-      // No recomputation needed for overlay toggle.
-    }
-  });
-  
+
+  // Start with a quadtree update
   updateQuadtree();
-  needsUpdate = false;
+  processedPG.beginDraw();
+  processedPG.background(255);
+  if(currentThreshold==0){
+    processedPG.background(255);
+  } else {
+    processedPG.image(img,0,0,IMAGE_WIDTH,IMAGE_HEIGHT);
+  }
+  if(!cmykMode && showPixelation){
+    quadtree.drawQuads(processedPG);
+  }
+  processedPG.endDraw();
+  processedImage=processedPG.get();
+  needsUpdate=false;
 }
 
-void draw() {
+void draw(){
   background(240);
-  
-  // --- Draw Sidebar ---
-  fill(220);
-  noStroke();
-  rect(0, 0, SIDEBAR_WIDTH, height);
-  
-  // --- Update processing if parameters changed ---
-  if (needsUpdate) {
-    if (cmykMode) {
+  // Manually draw controlP5
+  cp5.draw();
+
+  if(needsUpdate){
+    if(cmykMode){
       updateCMYK();
-    } else {
+    }
+    else{
       updateQuadtree();
+      processedPG.beginDraw();
+      processedPG.background(255);
+      if(currentThreshold==0){
+        processedPG.background(255);
+      } else {
+        processedPG.image(img,0,0,IMAGE_WIDTH,IMAGE_HEIGHT);
+      }
+      if(!cmykMode && showPixelation){
+        quadtree.drawQuads(processedPG);
+      }
+      processedPG.endDraw();
+      processedImage=processedPG.get();
     }
-    needsUpdate = false;
+    needsUpdate=false;
   }
-  
-  // --- Draw image or CMYK layers in the image area ---
+
+  // Draw final output to the right side
   pushMatrix();
-  translate(SIDEBAR_WIDTH, 0);
-  
-  if (cmykMode) {
-    // In CMYK mode, show four panels or an overlay composite:
-    if (overlayCMYK) {
-      // Overlay composite (simple average blend as placeholder)
-      if (compositeCMYK != null) {
-        image(compositeCMYK, 0, 0, IMAGE_WIDTH, IMAGE_HEIGHT);
-      }
-    } else {
-      // 2x2 grid: each image takes half width and half height
-      if (cImg != null && mImg != null && yImg != null && kImg != null) {
-        image(cImg, 0, 0, IMAGE_WIDTH/2, IMAGE_HEIGHT/2);
-        image(mImg, IMAGE_WIDTH/2, 0, IMAGE_WIDTH/2, IMAGE_HEIGHT/2);
-        image(yImg, 0, IMAGE_HEIGHT/2, IMAGE_WIDTH/2, IMAGE_HEIGHT/2);
-        image(kImg, IMAGE_WIDTH/2, IMAGE_HEIGHT/2, IMAGE_WIDTH/2, IMAGE_HEIGHT/2);
+  translate(SIDEBAR_WIDTH,0);
+  if(cmykMode){
+    if(overlayCMYK){
+      if(compositeCMYK!=null){
+        image(compositeCMYK,0,0,IMAGE_WIDTH,IMAGE_HEIGHT);
       }
     }
-  } else {
-    // Normal mode: draw background and quadtree subdivisions
-    if (showBackgroundImage) {
-      image(img, 0, 0, IMAGE_WIDTH, IMAGE_HEIGHT);
-    } else {
-      fill(255);
-      rect(0, 0, IMAGE_WIDTH, IMAGE_HEIGHT);
-    }
-    if (showPixelation) {
-      quadtree.drawQuads();
+    else{
+      if(cImg!=null && mImg!=null && yImg!=null && kImg!=null){
+        image(cImg,0,0,IMAGE_WIDTH/2,IMAGE_HEIGHT/2);
+        image(mImg,IMAGE_WIDTH/2,0,IMAGE_WIDTH/2,IMAGE_HEIGHT/2);
+        image(yImg,0,IMAGE_HEIGHT/2,IMAGE_WIDTH/2,IMAGE_HEIGHT/2);
+        image(kImg,IMAGE_WIDTH/2,IMAGE_HEIGHT/2,IMAGE_WIDTH/2,IMAGE_HEIGHT/2);
+      }
     }
   }
-  
+  else {
+    image(processedImage,0,0,IMAGE_WIDTH,IMAGE_HEIGHT);
+  }
   popMatrix();
 }
 
@@ -398,16 +414,19 @@ void draw() {
 // Quadtree Update Logic
 ////////////////////////
 
-/**
- * Recomputes the quadtree subdivision using current parameters.
- * This is used in non-CMYK mode.
- */
-void updateQuadtree() {
+void updateQuadtree(){
   quadtree.clear();
-  if (showPixelation) {
-    img.loadPixels();  // Ensure pixel data is current
-    quadtree.subdivide(0, 0, IMAGE_WIDTH, IMAGE_HEIGHT, currentThreshold, 
-                       showLinePatterns, currentPatternType, currentLineThickness, currentLineSpacing);
+  if(showPixelation){
+    img.loadPixels();
+    quadtree.subdivide(
+      0,0, 
+      IMAGE_WIDTH,IMAGE_HEIGHT, 
+      currentThreshold,
+      showLinePatterns,
+      currentPatternType,
+      currentLineThickness,
+      currentLineSpacing
+    );
   }
 }
 
@@ -415,51 +434,59 @@ void updateQuadtree() {
 // CMYK Update Logic
 ////////////////////////////
 
-/**
- * Updates the CMYK images (C, M, Y, K) and a composite overlay.
- * Uses a basic RGB-to-CMYK conversion formula and creates monochrome images.
- */
-void updateCMYK() {
-  // Initialize new images for each channel
-  cImg = createImage(IMAGE_WIDTH, IMAGE_HEIGHT, RGB);
-  mImg = createImage(IMAGE_WIDTH, IMAGE_HEIGHT, RGB);
-  yImg = createImage(IMAGE_WIDTH, IMAGE_HEIGHT, RGB);
-  kImg = createImage(IMAGE_WIDTH, IMAGE_HEIGHT, RGB);
-  compositeCMYK = createImage(IMAGE_WIDTH, IMAGE_HEIGHT, RGB);
+void updateCMYK(){
+  // Re-render to processedPG
+  processedPG.beginDraw();
+  processedPG.background(255);
+  if(currentThreshold==0){
+    processedPG.background(255);
+  } else {
+    processedPG.image(img,0,0,IMAGE_WIDTH,IMAGE_HEIGHT);
+  }
+  if(showPixelation){
+    quadtree.drawQuads(processedPG);
+  }
+  processedPG.endDraw();
   
-  img.loadPixels();
+  processedImage=processedPG.get();
+  
+  // Build channel images
+  cImg=createImage(IMAGE_WIDTH,IMAGE_HEIGHT,RGB);
+  mImg=createImage(IMAGE_WIDTH,IMAGE_HEIGHT,RGB);
+  yImg=createImage(IMAGE_WIDTH,IMAGE_HEIGHT,RGB);
+  kImg=createImage(IMAGE_WIDTH,IMAGE_HEIGHT,RGB);
+  compositeCMYK=createImage(IMAGE_WIDTH,IMAGE_HEIGHT,RGB);
+  
+  processedImage.loadPixels();
   cImg.loadPixels();
   mImg.loadPixels();
   yImg.loadPixels();
   kImg.loadPixels();
   compositeCMYK.loadPixels();
   
-  for (int i = 0; i < IMAGE_WIDTH * IMAGE_HEIGHT; i++) {
-    color orig = img.pixels[i];
-    float r = red(orig) / 255.0;
-    float g = green(orig) / 255.0;
-    float b = blue(orig) / 255.0;
+  for(int i=0;i<IMAGE_WIDTH*IMAGE_HEIGHT;i++){
+    color orig=processedImage.pixels[i];
+    float r=red(orig)/255.0;
+    float g=green(orig)/255.0;
+    float b=blue(orig)/255.0;
     
-    // Compute K channel
-    float K = 1 - max(r, max(g, b));
-    float C = (K < 1) ? (1 - r - K) / (1 - K) : 0;
-    float M = (K < 1) ? (1 - g - K) / (1 - K) : 0;
-    float Y = (K < 1) ? (1 - b - K) / (1 - K) : 0;
+    float K=1-max(r,max(g,b));
+    float C=(K<1)?(1-r-K)/(1-K):0;
+    float M=(K<1)?(1-g-K)/(1-K):0;
+    float Y=(K<1)?(1-b-K)/(1-K):0;
     
-    // Map channel values to grayscale (invert so that higher channel value means darker)
-    int cVal = int(255 * (1 - C));
-    int mVal = int(255 * (1 - M));
-    int yVal = int(255 * (1 - Y));
-    int kVal = int(255 * (1 - K));
+    int cVal=int(255*(1-C));
+    int mVal=int(255*(1-M));
+    int yVal=int(255*(1-Y));
+    int kVal=int(255*(1-K));
     
-    cImg.pixels[i] = color(cVal);
-    mImg.pixels[i] = color(mVal);
-    yImg.pixels[i] = color(yVal);
-    kImg.pixels[i] = color(kVal);
+    cImg.pixels[i]=color(cVal);
+    mImg.pixels[i]=color(mVal);
+    yImg.pixels[i]=color(yVal);
+    kImg.pixels[i]=color(kVal);
     
-    // Simple composite: average of the four channels (placeholder blend)
-    int compVal = int((cVal + mVal + yVal + kVal) / 4.0);
-    compositeCMYK.pixels[i] = color(compVal);
+    int compVal=int((cVal+mVal+yVal+kVal)/4.0);
+    compositeCMYK.pixels[i]=color(compVal);
   }
   
   cImg.updatePixels();
@@ -473,149 +500,161 @@ void updateCMYK() {
 // Image Processing Helpers
 ////////////////////////////
 
-/**
- * Computes the average color for a region using preloaded pixel data.
- */
-color getAverageColorRegion(float x, float y, float w, float h) {
-  int sumR = 0, sumG = 0, sumB = 0, count = 0;
-  for (int i = int(x); i < x + w; i++) {
-    for (int j = int(y); j < y + h; j++) {
-      int index = j * IMAGE_WIDTH + i;
-      if (i < IMAGE_WIDTH && j < IMAGE_HEIGHT && index < img.pixels.length) {
-        color c = img.pixels[index];
-        sumR += int(red(c));
-        sumG += int(green(c));
-        sumB += int(blue(c));
+color getAverageColorRegion(float x, float y, float w, float h){
+  int sumR=0,sumG=0,sumB=0,count=0;
+  for(int i=int(x);i<x+w;i++){
+    for(int j=int(y);j<y+h;j++){
+      int index=j*IMAGE_WIDTH + i;
+      if(i<IMAGE_WIDTH && j<IMAGE_HEIGHT && index<img.pixels.length){
+        color c=img.pixels[index];
+        sumR+=int(red(c));
+        sumG+=int(green(c));
+        sumB+=int(blue(c));
         count++;
       }
     }
   }
-  if (count == 0) return color(255);
-  return color(sumR / count, sumG / count, sumB / count);
+  if(count==0)return color(255);
+  return color(sumR/count,sumG/count,sumB/count);
 }
 
-/**
- * Computes the average color variation for a region.
- * Variation is defined as the average Euclidean distance in RGB space
- * between each pixel and the region's average color.
- */
-float getColorVariationRegion(float x, float y, float w, float h, color avgColor) {
-  float totalVariation = 0;
-  int count = 0;
-  float avgR = red(avgColor), avgG = green(avgColor), avgB = blue(avgColor);
-  
-  for (int i = int(x); i < x + w; i++) {
-    for (int j = int(y); j < y + h; j++) {
-      int index = j * IMAGE_WIDTH + i;
-      if (i < IMAGE_WIDTH && j < IMAGE_HEIGHT && index < img.pixels.length) {
-        color c = img.pixels[index];
-        float variation = dist(red(c), green(c), blue(c), avgR, avgG, avgB);
-        totalVariation += variation;
+float getColorVariationRegion(float x,float y,float w,float h,color avg){
+  float totalVariation=0; 
+  int count=0;
+  float avgR=red(avg),avgG=green(avg),avgB=blue(avg);
+  for(int i=int(x); i<x+w; i++){
+    for(int j=int(y); j<y+h; j++){
+      int index=j*IMAGE_WIDTH + i;
+      if(i<IMAGE_WIDTH && j<IMAGE_HEIGHT && index<img.pixels.length){
+        color c=img.pixels[index];
+        float variation=dist(red(c),green(c),blue(c), avgR,avgG,avgB);
+        totalVariation+=variation;
         count++;
       }
     }
   }
-  if (count == 0) return 0;
-  return totalVariation / count;
+  if(count==0)return 0;
+  return totalVariation/count;
 }
 
-/**
- * Generates a patterned color for a region.
- * This placeholder adjusts brightness based on the pattern type.
- * Future work: Replace with a more complex pattern-fill algorithm.
- */
-color generatePatternForRegion(float x, float y, float w, float h, int patternType, float thickness, float spacing) {
-  color baseColor = getAverageColorRegion(x, y, w, h);
-  float factor = 0.8 + (patternType * 0.04);
-  return color(red(baseColor) * factor, green(baseColor) * factor, blue(baseColor) * factor);
+color generatePatternForRegion(float x,float y,float w,float h,int pType,float thick,float sp){
+  color baseColor=getAverageColorRegion(x,y,w,h);
+  float factor=0.8+(pType*0.04);
+  return color(red(baseColor)*factor, green(baseColor)*factor, blue(baseColor)*factor);
 }
 
-/**
- * Draws a pattern in the specified rectangular region.
- * Pattern types:
- *   0: Horizontal lines
- *   1: Vertical lines
- *   2: Diagonal lines (top-left to bottom-right)
- *   3: Crosshatch (horizontal + vertical)
- *   4: Alternating diagonal
- *   5: Grid of circles
- */
-void drawPattern(float x, float y, float w, float h, int type, float thickness, float spacing) {
-  stroke(0);
-  strokeWeight(thickness);
-  noFill();
+void drawPattern(PGraphics pg, float x,float y,float w,float h,int type,float thick,float sp){
+  pg.stroke(0);
+  pg.strokeWeight(thick);
+  pg.noFill();
   
-  if (type == 0) { 
-    // Horizontal lines
-    for (float j = y; j < y + h; j += spacing) {
-      line(x, j, x + w, j);
+  if(type==0){ // Horizontal
+    for(float j=y;j<y+h;j+=sp){
+      pg.line(x,j,x+w,j);
     }
-  } else if (type == 1) {
-    // Vertical lines
-    for (float i = x; i < x + w; i += spacing) {
-      line(i, y, i, y + h);
+  }
+  else if(type==1){ // Vertical
+    for(float i=x;i<x+w;i+=sp){
+      pg.line(i,y,i,y+h);
     }
-  } else if (type == 2) {
-    // Diagonal lines (top-left to bottom-right)
-    for (float offset = -w; offset < h; offset += spacing) {
-      line(x, y + max(0, offset), x + min(w, w + offset), y + min(h, offset + w));
+  }
+  else if(type==2){ // Diagonal
+    for(float offset=-w;offset<h;offset+=sp){
+      pg.line(x, y+max(0,offset), x+min(w,w+offset), y+min(h,offset+w));
     }
-  } else if (type == 3) {
-    // Crosshatch: horizontal + vertical
-    for (float j = y; j < y + h; j += spacing) {
-      line(x, j, x + w, j);
+  }
+  else if(type==3){ // Crosshatch
+    for(float j=y;j<y+h;j+=sp){
+      pg.line(x,j,x+w,j);
     }
-    for (float i = x; i < x + w; i += spacing) {
-      line(i, y, i, y + h);
+    for(float i=x;i<x+w;i+=sp){
+      pg.line(i,y,i,y+h);
     }
-  } else if (type == 4) {
-    // Alternating diagonal: alternate slope for each row
-    for (float j = y; j < y + h; j += spacing) {
-      if (((int)((j - y) / spacing)) % 2 == 0) {
-        line(x, j, x + w, j + w);
-      } else {
-        line(x + w, j, x, j + w);
+  }
+  else if(type==4){ // Alternating diagonal
+    for(float j=y;j<y+h;j+=sp){
+      if(((int)((j-y)/sp))%2==0){
+        pg.line(x,j,x+w,j+w);
+      }else{
+        pg.line(x+w,j,x,j+w);
       }
     }
-  } else if (type == 5) {
-    // Grid of circles
-    for (float i = x; i < x + w; i += spacing) {
-      for (float j = y; j < y + h; j += spacing) {
-        noFill();
-        ellipse(i, j, thickness * 2, thickness * 2);
+  }
+  else if(type==5){ // Circle grid
+    for(float i=x;i<x+w;i+=sp){
+      for(float j=y;j<y+h;j+=sp){
+        pg.noFill();
+        pg.ellipse(i,j,thick*2,thick*2);
       }
     }
   }
 }
 
 ////////////////////////////
-// File Input Handling
+// File Input & Export
 ////////////////////////////
 
-/**
- * Handles file selection for loading a new image.
- */
-public void fileSelected(File selection) {
-  if (selection == null) {
-    println("No file was selected, or the window was closed.");
-  } else {
-    String path = selection.getAbsolutePath();
-    println("Loading new image from: " + path);
-    PImage newImg = loadImage(path);
-    if (newImg == null) {
-      println("Could not load the image. Please select a valid image format.");
+public void fileSelected(File selection){
+  if(selection==null){
+    println("No file selected.");
+  }else{
+    String path=selection.getAbsolutePath();
+    println("Loading new image from: "+path);
+    PImage newImg=loadImage(path);
+    if(newImg==null){
+      println("Could not load valid format.");
       return;
     }
-    newImg.resize(IMAGE_WIDTH, IMAGE_HEIGHT);
-    img = newImg;
+    newImg.resize(IMAGE_WIDTH,IMAGE_HEIGHT);
+    img=newImg;
     img.loadPixels();
-    needsUpdate = true;
+    baseFileName="export_"+nf(millis(),8);
+    needsUpdate=true;
   }
 }
 
-/**
- * Triggered by the "Load Image" button in the GUI.
- */
-public void LoadImage() {
+public void LoadImage(){
   selectInput("Select an image to process:", "fileSelected");
+}
+
+void exportImage(){
+  // Re-render the processed output
+  processedPG.beginDraw();
+  processedPG.background(255);
+  if(currentThreshold==0){
+    processedPG.background(255);
+  } else {
+    processedPG.image(img,0,0,IMAGE_WIDTH,IMAGE_HEIGHT);
+  }
+  if(!cmykMode && showPixelation){
+    quadtree.drawQuads(processedPG);
+  }
+  processedPG.endDraw();
+  processedImage=processedPG.get();
+  
+  // If in CMYK mode, refresh channels
+  if(cmykMode){
+    updateCMYK();
+  }
+  
+  // Create export folder
+  String folderName=baseFileName+"_export";
+  File exportFolder=new File(dataPath(folderName));
+  if(!exportFolder.exists()){
+    exportFolder.mkdirs();
+  }
+  
+  if(cmykMode){
+    if(cImg!=null && mImg!=null && yImg!=null && kImg!=null){
+      cImg.save(folderName+"/"+baseFileName+"_Cyan.jpg");
+      mImg.save(folderName+"/"+baseFileName+"_Magenta.jpg");
+      yImg.save(folderName+"/"+baseFileName+"_Yellow.jpg");
+      kImg.save(folderName+"/"+baseFileName+"_Black.jpg");
+      println("CMYK images exported to "+exportFolder.getAbsolutePath());
+    }
+  }
+  else{
+    processedImage.save(folderName+"/"+baseFileName+"_Processed.jpg");
+    println("Processed image exported to "+exportFolder.getAbsolutePath());
+  }
 }
